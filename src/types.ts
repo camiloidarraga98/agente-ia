@@ -10,6 +10,7 @@ export type Agent = {
   instructions: string;
 };
 export type TaskStatus =
+  | "waiting"
   | "queued"
   | "running"
   | "completed"
@@ -26,7 +27,8 @@ export type Task = {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
-  mode: "demo" | "openai";
+  mode: "demo" | "openai" | "chatgpt";
+  resultSource?: "manual" | "action";
   workflowRunId: string | null;
 };
 export type WorkflowStep = { agentId: string; title: string; prompt: string };
@@ -60,7 +62,17 @@ export type Workspace = {
   workflows: Workflow[];
   runs: WorkflowRun[];
   activity: Activity[];
-  settings: { dotInstructions: string; slackChannelId: string; model: string };
-  provider: { mode: "demo" | "openai"; configured: boolean; model: string };
+  settings: {
+    dotInstructions: string;
+    slackChannelId: string;
+    model: string;
+    executionMode: "auto" | "chatgpt";
+  };
+  provider: {
+    mode: "demo" | "openai" | "chatgpt";
+    configured: boolean;
+    model: string;
+  };
+  gpt: { configured: boolean };
   slack: { configured: boolean; channelConfigured: boolean };
 };

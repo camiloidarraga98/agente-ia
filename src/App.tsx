@@ -37,6 +37,8 @@ import {
 } from "lucide-react";
 import OfficeMap from "./OfficeMap";
 import Login from "./Login";
+import ChatGPTConnection from "./ChatGPTConnection";
+import ChatGPTTask from "./ChatGPTTask";
 import type { Agent, Task, TaskStatus, Workflow, Workspace } from "./types";
 
 type Page = "office" | "tasks" | "workflows" | "connections";
@@ -48,6 +50,7 @@ type ModalState =
   | { kind: "connection"; service: "openai" | "slack" }
   | { kind: "help" };
 const statusLabels: Record<TaskStatus, string> = {
+  waiting: "Espera a DOT",
   queued: "En cola",
   running: "Trabajando",
   completed: "Completada",
@@ -204,12 +207,16 @@ function TaskForm({
     agentId: string;
     title: string;
     prompt: string;
+    execution: "auto" | "chatgpt";
   }) => Promise<void>;
   onClose: () => void;
 }) {
   const [agentId, setAgentId] = useState(initialAgent || "dot");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [execution, setExecution] = useState<"auto" | "chatgpt">(
+    workspace.settings.executionMode,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   return (
@@ -224,7 +231,7 @@ function TaskForm({
           setSaving(true);
           setError("");
           try {
-            await onSubmit({ agentId, title, prompt });
+            await onSubmit({ agentId, title, prompt, execution });
           } catch (err) {
             setError((err as Error).message);
           } finally {
@@ -263,11 +270,27 @@ function TaskForm({
             placeholder="Añade fechas, actividades, lugares y los detalles que debe tener en cuenta…"
           />
         </label>
+        <label>
+          Dónde quieres resolverla
+          <select
+            value={execution}
+            onChange={(e) => setExecution(e.target.value as "auto" | "chatgpt")}
+          >
+            <option value="chatgpt">Con mi DOT en ChatGPT</option>
+            <option value="auto">
+              {workspace.provider.configured
+                ? "Con la API de OpenAI"
+                : "Con una plantilla de demostración"}
+            </option>
+          </select>
+        </label>
         <div className="form-note">
           <Sparkles size={15} />
-          {workspace.provider.mode === "demo"
-            ? "Modo demo: recibirás una plantilla local para probar el flujo."
-            : "El agente usará las instrucciones de DOT y tu brief."}
+          {execution === "chatgpt"
+            ? "La tarea esperará a que la resuelvas con DOT dentro de ChatGPT. No se llama a la API de OpenAI."
+            : !workspace.provider.configured
+              ? "Modo demo: recibirás una plantilla local para probar el flujo."
+              : "El agente usará las instrucciones de DOT y tu brief."}
         </div>
         <FormError error={error} />
         <div className="modal-footer">
@@ -349,9 +372,11 @@ function WorkflowForm({
         </div>
         <div className="form-note">
           <Users size={15} />
-          {mode === "demo"
-            ? "Demo con plantillas. El borrador requiere revisión humana."
-            : "El resultado final quedará pendiente de la revisión de Luisa."}
+          {mode === "chatgpt"
+            ? "Cada paso esperará su respuesta desde ChatGPT. Tú inicias el trabajo con DOT."
+            : mode === "demo"
+              ? "Demo con plantillas. El borrador requiere revisión humana."
+              : "El resultado final quedará pendiente de la revisión de Luisa."}
         </div>
         <FormError error={error} />
         <div className="modal-footer">
@@ -466,12 +491,14 @@ function TaskResult({
   onCancel,
   onClose,
   notify,
+  onSaved,
 }: {
   task: Task;
   agent: Agent;
   onCancel: () => Promise<void>;
   onClose: () => void;
   notify: (text: string) => void;
+  onSaved: () => Promise<void>;
 }) {
   const [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -504,8 +531,17 @@ function TaskResult({
         </span>
         <Status status={task.status} />
         <span className="pill">
-          {task.mode === "demo" ? "Demostración" : "OpenAI"}
+          {task.mode === "chatgpt"
+            ? "ChatGPT"
+            : task.mode === "demo"
+              ? "Demostración"
+              : "OpenAI"}
         </span>
+        {task.resultSource && (
+          <span className="pill">
+            {task.resultSource === "manual" ? "Pegado por ti" : "Acción de DOT"}
+          </span>
+        )}
       </div>
       <div className="brief-block">
         <span className="eyebrow">TU SOLICITUD</span>
@@ -520,6 +556,8 @@ function TaskResult({
           <X size={28} />
           <p>La tarea fue cancelada.</p>
         </div>
+      ) : task.status === "waiting" ? (
+        <ChatGPTTask taskId={task.id} onSaved={onSaved} notify={notify} />
       ) : (
         <div className="empty-result">
           <LoaderCircle size={30} className="spin" />
@@ -537,7 +575,7 @@ function TaskResult({
       )}
       <FormError error={error} />
       <div className="modal-footer">
-        {["queued", "running"].includes(task.status) ? (
+        {["queued", "running", "waiting"].includes(task.status) ? (
           <button
             className="button secondary"
             disabled={cancelling}
@@ -629,6 +667,11 @@ function Connections({
           <p>Tu asistente, tus conversaciones y tu forma de trabajar.</p>
         </div>
       </div>
+      <ChatGPTConnection
+        workspace={workspace}
+        refresh={refresh}
+        notify={notify}
+      />
       <div className="connection-grid">
         <section className="panel connection-card">
           <div className="connection-head">
@@ -828,13 +871,13 @@ export default function App() {
     );
   const { agents, tasks, workflows, runs } = workspace;
   const active = tasks.filter((t) => t.status === "running");
-  const queued = tasks.filter((t) => t.status === "queued");
+  const queued = tasks.filter((t) => ["queued", "waiting"].includes(t.status));
   const completed = tasks.filter((t) => t.status === "completed");
   const filtered = tasks.filter(
     (t) =>
       (filter === "all" ||
         (filter === "active"
-          ? ["running", "queued"].includes(t.status)
+          ? ["running", "queued", "waiting"].includes(t.status)
           : t.status === filter)) &&
       `${t.title} ${t.prompt} ${agents.find((a) => a.id === t.agentId)?.name}`
         .toLowerCase()
@@ -1056,7 +1099,9 @@ export default function App() {
               <span />
               {workspace.provider.mode === "demo"
                 ? "Modo demostración"
-                : "OpenAI configurado"}
+                : workspace.provider.mode === "chatgpt"
+                  ? "Trabajo en ChatGPT"
+                  : "OpenAI configurado"}
             </span>
             <span className="topbar-divider" />
             <button
@@ -1395,7 +1440,12 @@ export default function App() {
                                 {task.workflowRunId
                                   ? "Parte de un flujo de trabajo"
                                   : "Tarea individual"}{" "}
-                                · {task.mode === "demo" ? "Demo" : "OpenAI"}
+                                ·{" "}
+                                {task.mode === "chatgpt"
+                                  ? "ChatGPT"
+                                  : task.mode === "demo"
+                                    ? "Demo"
+                                    : "OpenAI"}
                               </small>
                             </span>
                           </span>
@@ -1655,6 +1705,7 @@ export default function App() {
                 setToast("Tarea cancelada");
               }}
               notify={setToast}
+              onSaved={refresh}
             />
           ) : null;
         })()}
@@ -1779,9 +1830,11 @@ export default function App() {
             <Headphones size={19} />
             <p>
               Ahora estás en{" "}
-              {workspace.provider.mode === "demo"
-                ? "modo demostración: las tareas generan plantillas locales. Conecta OpenAI para trabajar con IA."
-                : "modo OpenAI. Las tareas utilizan la API y las instrucciones configuradas."}
+              {workspace.provider.mode === "chatgpt"
+                ? "modo ChatGPT: resuelve los pedidos con DOT en tu conversación y guarda sus respuestas en la oficina. Las tareas no se ejecutan en segundo plano."
+                : workspace.provider.mode === "demo"
+                  ? "modo demostración: las tareas generan plantillas locales. Conecta OpenAI para trabajar con IA."
+                  : "modo OpenAI. Las tareas utilizan la API y las instrucciones configuradas."}
             </p>
           </div>
           <div className="modal-footer">

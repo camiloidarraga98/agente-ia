@@ -58,6 +58,8 @@ La configuración preparada no constituye un despliegue activo: es necesario con
 
 ## Conectar DOT a través de OpenAI
 
+Si quieres trabajar con la suscripción de ChatGPT, usa el modo descrito en la sección siguiente. La conexión de API de esta sección es independiente y no utiliza esa suscripción.
+
 1. Añade **JAC_OPENAI_API_KEY** de forma segura en las variables del entorno. También se admite una variable `OPENAI_API_KEY` ya existente. No escribas claves en el repositorio, el chat ni el navegador.
 2. Permite solicitudes HTTPS a **api.openai.com** en la configuración de red.
 3. Reinicia `npm run dev` o `npm start`.
@@ -67,6 +69,34 @@ La configuración preparada no constituye un despliegue activo: es necesario con
 La API usa `gpt-4.1-mini` por defecto; puedes seleccionar otro modelo disponible mediante `JAC_MODEL`. Las peticiones usan Responses API con `store: false` y mantienen la verificación TLS y el proxy del entorno.
 
 Una cuenta o GPT personalizado de ChatGPT no ofrece aquí una conexión automática a su historial, archivos, memoria ni herramientas. Esta versión reutiliza las instrucciones que tú aportes y ejecuta los agentes mediante una clave de API, cuyo uso se factura por separado.
+
+## Probar con DOT dentro de ChatGPT
+
+Este modo utiliza tu conversación con DOT en ChatGPT. La oficina registra pedidos y borradores, pero **no invoca la API de OpenAI para las tareas de ChatGPT**, incluso si existe una clave de API configurada. Se aplican los límites y capacidades de tu plan de ChatGPT. Los agentes representan roles e instrucciones; el trabajo comienza cuando tú se lo pides a DOT, sin procesos de IA en segundo plano.
+
+### Primera prueba: copiar y pegar
+
+1. En **Conexiones**, pulsa **Usar mi ChatGPT**, o selecciona **Con mi DOT en ChatGPT** al crear una tarea.
+2. Asigna a Atlas una tarea pequeña, por ejemplo: «Organiza un ensayo a las 15:00 y un show a las 20:00 en Bogotá. El traslado aún no está confirmado. Indica qué debe revisar Luisa».
+3. La tarea queda en **Espera a DOT**. Pulsa **Copiar pedido para DOT** y pega el pedido en tu conversación con DOT.
+4. Pega el borrador que recibas en **Respuesta de DOT** y pulsa **Guardar respuesta**. La tarea queda completada y muestra **Pegado por ti**; la aplicación no verifica por sí sola qué modelo generó el texto pegado.
+
+Los flujos también funcionan así: cada respuesta crea el siguiente paso, que espera a ChatGPT y recibe el contexto anterior. El modo del flujo se conserva aunque cambies después la configuración general. Guardar dos veces la misma respuesta no crea pasos duplicados; las respuestas terminadas no se sobrescriben y las tareas canceladas no pueden completarse. Las tareas pendientes se conservan si se conserva el directorio de datos; el plan gratuito de Render sigue teniendo almacenamiento temporal.
+
+### Conexión opcional: acciones de un GPT editable
+
+Esta conexión requiere que DOT sea un **GPT personalizado que puedas editar**. Una conversación o proyecto normal puede usar la prueba manual, pero no ofrece el mismo editor de acciones.
+
+1. Sincroniza el blueprint de Render actualizado. Incluye la variable **JAC_GPT_ACTIONS_KEY**, con un valor generado que permanece únicamente en el hosting; debe tener al menos 32 caracteres y ser distinto de la contraseña de la oficina.
+2. Abre **Conexiones → Conectar las acciones de DOT**. Descarga el esquema o copia su URL. En Render la URL se obtiene de `RENDER_EXTERNAL_URL`; fuera de Render, configura `PUBLIC_ORIGIN` con el origen HTTPS del servicio.
+3. En ChatGPT abre **Mis GPTs**, elige **Editar** en DOT y entra en **Configurar → Crear nueva acción**.
+4. Importa el esquema y configura autenticación **API Key → Bearer**. Copia el valor de `JAC_GPT_ACTIONS_KEY` del panel seguro de Render a la configuración de autenticación de la acción. No uses tu contraseña de la oficina, no pegues la clave en el chat ni en las instrucciones del GPT.
+5. Añade las instrucciones que muestra la oficina al final de las instrucciones actuales de DOT. Conserva las reglas que ya tiene y guarda el GPT.
+6. Crea una tarea para ChatGPT, copia su pedido y envíalo a DOT. Pídele que consulte el ID y guarde el borrador. ChatGPT puede solicitar confirmación para el acceso y el guardado.
+
+Las acciones pueden leer el equipo, listar pendientes, leer una tarea, crear una tarea para ChatGPT y guardar su respuesta. No tienen acceso a los ajustes de la oficina, no llaman a modelos mediante API, no publican en Slack y no hacen reservas. Las rutas de acciones requieren su propia clave Bearer y no aceptan la cookie de entrada de la oficina como sustituto. El esquema OpenAPI es público y no contiene datos privados ni credenciales; las instrucciones personalizadas y los briefs requieren autenticación.
+
+El texto recibido del GPT es un borrador para revisión humana. Las peticiones de guardado están marcadas como acciones con consecuencias en el esquema. El guardado recibido por esta ruta muestra **Acción de DOT**. Preparar y probar las rutas localmente no demuestra que el GPT esté conectado: confirma una lectura y un guardado reales desde ChatGPT antes de considerar activa la integración.
 
 ## Conectar Slack · #itinerarios
 
@@ -95,6 +125,6 @@ npm run build
 npm run test:e2e
 ```
 
-Las trece pruebas de servidor cubren persistencia, ejecución paralela, contexto entre pasos, cancelación, reinicios, errores del proveedor, importación de Slack, validación de la API y acceso protegido. OpenAI y Slack usan respuestas simuladas en esas pruebas, sin llamadas reales ni publicación de mensajes.
+Las veinte pruebas de servidor cubren persistencia, ejecución paralela, contexto entre pasos, cancelación, reinicios, errores del proveedor, importación de Slack, validación de la API, acceso protegido y tareas/acciones de ChatGPT. Se verifica que las tareas de ChatGPT no invocan la API incluso con una clave configurada. OpenAI y Slack usan respuestas simuladas, sin llamadas reales ni publicación de mensajes.
 
-Las seis pruebas de navegador usan la interfaz compilada y servidores de prueba en modo demo: asignación de tareas, descarga de borradores, flujos completos, configuración, navegación móvil y login/logout. Requieren Chromium (`/usr/bin/chromium` en este entorno); para otra ubicación, configura `JAC_CHROMIUM_PATH`. Ejecuta `npm run build` antes de las pruebas de navegador si has cambiado la interfaz.
+Las ocho pruebas de navegador usan la interfaz compilada y servidores de prueba: asignación de tareas, descarga de borradores, flujos completos, configuración, navegación móvil, login/logout y el recorrido manual de ChatGPT. Requieren Chromium (`/usr/bin/chromium` en este entorno); para otra ubicación, configura `JAC_CHROMIUM_PATH`. Ejecuta `npm run build` antes de las pruebas de navegador si has cambiado la interfaz.

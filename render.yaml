@@ -20,3 +20,5 @@ services:
         generateValue: true
       - key: JAC_MODEL
         value: gpt-4.1-mini
+      - key: JAC_GPT_ACTIONS_KEY
+        generateValue: true

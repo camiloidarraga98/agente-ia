@@ -4,6 +4,11 @@ import { resolve, extname, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ApiError, createWorkspace } from "./workspace.mjs";
 import { createAuth } from "./auth.mjs";
+import {
+  createGPTAuth,
+  createGPTSchema,
+  dotActionInstructions,
+} from "./gpt-actions.mjs";
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -20,7 +25,11 @@ export function createApp(options = {}) {
     required: options.requireAuth,
     secure: options.secureCookies,
   });
-  const workspace = createWorkspace(options);
+  const gptAuth = createGPTAuth(options.gptActionsKey, options.accessPassword);
+  const workspace = createWorkspace({
+    ...options,
+    actionsConfigured: Boolean(options.gptActionsKey),
+  });
   const dist = resolve(options.distDir ?? "dist");
   const json = (res, status, body) => {
     res.writeHead(status, {
@@ -45,7 +54,12 @@ export function createApp(options = {}) {
           required: auth.enabled,
           authenticated: auth.authenticated(req),
         });
+      if (req.method === "GET" && url.pathname === "/api/gpt/schema")
+        return json(res, 200, createGPTSchema(options.publicOrigin));
       if (url.pathname.startsWith("/api/")) {
+        const gptRoute =
+          url.pathname.startsWith("/api/gpt/") &&
+          url.pathname !== "/api/gpt/setup";
         const mutation = !["GET", "HEAD"].includes(req.method);
         if (mutation && req.headers["sec-fetch-site"] === "cross-site")
           throw new ApiError(403, "La solicitud debe venir de la aplicación.");
@@ -53,7 +67,8 @@ export function createApp(options = {}) {
           req.method === "POST" && url.pathname === "/api/auth/login";
         const logout =
           req.method === "POST" && url.pathname === "/api/auth/logout";
-        if (!login && !logout && !auth.authenticated(req))
+        if (gptRoute) gptAuth(req);
+        if (!gptRoute && !login && !logout && !auth.authenticated(req))
           throw new ApiError(401, "Inicia sesión para entrar a tu oficina.");
         let body = {};
         if (mutation) {
@@ -81,6 +96,49 @@ export function createApp(options = {}) {
           auth.logout(req, res);
           return json(res, 200, { ok: true });
         }
+        if (req.method === "GET" && url.pathname === "/api/gpt/setup")
+          return json(res, 200, {
+            configured: Boolean(options.gptActionsKey),
+            instructions: dotActionInstructions,
+            schemaUrl: options.publicOrigin
+              ? new URL("/api/gpt/schema", options.publicOrigin).href
+              : null,
+          });
+        if (gptRoute) {
+          if (req.method === "GET" && url.pathname === "/api/gpt/context")
+            return json(res, 200, workspace.chatGPTContext());
+          if (req.method === "GET" && url.pathname === "/api/gpt/tasks")
+            return json(
+              res,
+              200,
+              workspace.listChatGPTTasks({
+                taskId: url.searchParams.get("taskId"),
+                workflowRunId: url.searchParams.get("workflowRunId"),
+              }),
+            );
+          if (req.method === "POST" && url.pathname === "/api/gpt/tasks")
+            return json(
+              res,
+              201,
+              workspace.createTask({ ...body, execution: "chatgpt" }),
+            );
+          const gptTask = url.pathname.match(/^\/api\/gpt\/tasks\/([^/]+)$/);
+          if (req.method === "GET" && gptTask)
+            return json(res, 200, workspace.getChatGPTTask(gptTask[1]));
+          const gptResult = url.pathname.match(
+            /^\/api\/gpt\/tasks\/([^/]+)\/result$/,
+          );
+          if (req.method === "POST" && gptResult)
+            return json(
+              res,
+              200,
+              workspace.saveChatGPTResult(gptResult[1], body, "action"),
+            );
+          throw new ApiError(
+            404,
+            "Esta operación no está disponible para DOT.",
+          );
+        }
         if (req.method === "GET" && url.pathname === "/api/workspace")
           return json(res, 200, {
             ...workspace.snapshot(),
@@ -91,6 +149,21 @@ export function createApp(options = {}) {
         const cancel = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
         if (req.method === "POST" && cancel)
           return json(res, 200, workspace.cancelTask(cancel[1]));
+        const handoff = url.pathname.match(/^\/api\/tasks\/([^/]+)\/handoff$/);
+        if (req.method === "GET" && handoff) {
+          const data = workspace.getChatGPTTask(handoff[1]);
+          const text = `DOT, trabaja esta tarea de JAC Music con el rol de ${data.agent.name} (${data.agent.role}).\nID de la tarea: ${data.task.id}\n\nINSTRUCCIONES DEL AGENTE:\n${data.agent.instructions}\n\nREGLAS DE DOT EN LA OFICINA:\n${data.dotInstructions || "Usa tus instrucciones personales y las indicaciones del usuario."}\n\nPEDIDO:\n${data.task.prompt}\n\nCONTEXTO DEL FLUJO:\n${data.context || "Tarea individual."}\n\nEntrega un borrador para revisión humana. No inventes datos ni confirmaciones. Si tienes las acciones de la oficina, consulta esta tarea y guarda el resultado con guardarResultadoJAC. Si no tienes acciones, dame la respuesta para pegarla en la oficina.`;
+          return json(res, 200, { text });
+        }
+        const manualResult = url.pathname.match(
+          /^\/api\/tasks\/([^/]+)\/result$/,
+        );
+        if (req.method === "POST" && manualResult)
+          return json(
+            res,
+            200,
+            workspace.saveChatGPTResult(manualResult[1], body, "manual"),
+          );
         if (req.method === "POST" && url.pathname === "/api/runs")
           return json(res, 201, workspace.createRun(body));
         if (req.method === "PATCH" && url.pathname === "/api/settings")
@@ -144,6 +217,8 @@ if (
     apiKey: process.env.JAC_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
     slackToken: process.env.JAC_SLACK_BOT_TOKEN,
     model: process.env.JAC_MODEL || "gpt-4.1-mini",
+    gptActionsKey: process.env.JAC_GPT_ACTIONS_KEY,
+    publicOrigin: process.env.PUBLIC_ORIGIN || process.env.RENDER_EXTERNAL_URL,
   });
   server.listen(Number(process.env.PORT || 3001), "0.0.0.0", () =>
     console.log(

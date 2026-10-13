@@ -31,6 +31,7 @@ export function createWorkspace({
   model = "gpt-4.1-mini",
   fetchImpl = fetch,
   demoDelay = 1800,
+  actionsConfigured = false,
 } = {}) {
   const file = dataDir ? resolve(dataDir, "workspace.json") : null;
   if (dataDir) mkdirSync(dataDir, { recursive: true });
@@ -39,6 +40,7 @@ export function createWorkspace({
       ? JSON.parse(readFileSync(file, "utf8"))
       : initialState();
   const mode = apiKey ? "openai" : "demo";
+  state.settings.executionMode ??= "auto";
   let closed = false;
   const controllers = new Map();
   const occupied = new Set();
@@ -68,14 +70,20 @@ export function createWorkspace({
     }
   }
   for (const run of state.runs)
-    if (run.status === "running") run.status = "failed";
+    if (run.status === "running" && run.mode !== "chatgpt")
+      run.status = "failed";
   save();
 
   function snapshot() {
     return structuredClone({
       ...state,
       settings: { ...state.settings, model },
-      provider: { mode, configured: Boolean(apiKey), model },
+      provider: {
+        mode: state.settings.executionMode === "chatgpt" ? "chatgpt" : mode,
+        configured: Boolean(apiKey),
+        model,
+      },
+      gpt: { configured: actionsConfigured },
       slack: {
         configured: Boolean(slackToken),
         channelConfigured: Boolean(state.settings.slackChannelId),
@@ -83,13 +91,18 @@ export function createWorkspace({
     });
   }
   function newTask(input, runId = null, context = "") {
+    const execution = input.execution ?? state.settings.executionMode;
+    if (!["auto", "chatgpt"].includes(execution))
+      throw new ApiError(400, "Selecciona dónde se ejecutará la tarea.");
+    const taskMode = execution === "chatgpt" ? "chatgpt" : mode;
     const agent = state.agents.find((a) => a.id === input.agentId);
     if (!agent) throw new ApiError(400, "Selecciona un agente válido.");
     const title = requiredText(input.title, "El título", 160);
     const prompt = requiredText(input.prompt, "La tarea");
     if (
-      state.tasks.filter((t) => ["queued", "running"].includes(t.status))
-        .length >= 60
+      state.tasks.filter((t) =>
+        ["queued", "running", "waiting"].includes(t.status),
+      ).length >= 60
     )
       throw new ApiError(
         429,
@@ -100,13 +113,13 @@ export function createWorkspace({
       agentId: agent.id,
       title,
       prompt,
-      status: "queued",
+      status: taskMode === "chatgpt" ? "waiting" : "queued",
       result: null,
       error: null,
       createdAt: now(),
       startedAt: null,
       completedAt: null,
-      mode,
+      mode: taskMode,
       workflowRunId: runId,
       context,
     };
@@ -226,7 +239,15 @@ export function createWorkspace({
         .filter(Boolean)
         .map((t) => `${t.title}:\n${t.result}`)
         .join("\n\n");
-    const next = newTask({ ...step, prompt: step.prompt }, run.id, context);
+    const next = newTask(
+      {
+        ...step,
+        prompt: step.prompt,
+        execution: run.mode === "chatgpt" ? "chatgpt" : "auto",
+      },
+      run.id,
+      context,
+    );
     run.taskIds.push(next.id);
   }
   async function work(task) {
@@ -279,10 +300,77 @@ export function createWorkspace({
   return {
     snapshot,
     createTask: (input) => newTask(input),
+    getChatGPTTask(id) {
+      const task = state.tasks.find((t) => t.id === id && t.mode === "chatgpt");
+      if (!task) throw new ApiError(404, "La tarea de ChatGPT no existe.");
+      const agent = state.agents.find((a) => a.id === task.agentId);
+      const { context, ...visibleTask } = task;
+      const contextTruncated = context.length > 60000;
+      const reference = contextTruncated
+        ? context.slice(0, 15000) +
+          "\n[Contexto abreviado por límite de tamaño]\n" +
+          context.slice(-45000)
+        : context;
+      return structuredClone({
+        task: visibleTask,
+        agent,
+        dotInstructions: state.settings.dotInstructions,
+        context: reference,
+        contextTruncated,
+      });
+    },
+    listChatGPTTasks({ taskId, workflowRunId } = {}) {
+      let tasks = state.tasks.filter(
+        (t) => t.mode === "chatgpt" && t.status === "waiting",
+      );
+      if (taskId) tasks = tasks.filter((t) => t.id === taskId);
+      if (workflowRunId)
+        tasks = tasks.filter((t) => t.workflowRunId === workflowRunId);
+      return structuredClone({
+        tasks: [...tasks]
+          .reverse()
+          .slice(0, 10)
+          .map(({ context, ...task }) => task),
+        total: tasks.length,
+      });
+    },
+    chatGPTContext() {
+      return structuredClone({
+        agents: state.agents,
+        dotInstructions: state.settings.dotInstructions,
+        execution:
+          "El trabajo se realiza dentro de ChatGPT. La oficina solo registra solicitudes y resultados; estas acciones no llaman a la API de OpenAI.",
+      });
+    },
+    saveChatGPTResult(id, input, source = "manual") {
+      const task = state.tasks.find((t) => t.id === id);
+      if (!task) throw new ApiError(404, "La tarea no existe.");
+      if (task.mode !== "chatgpt")
+        throw new ApiError(
+          409,
+          "Solo puedes guardar respuestas de tareas creadas para ChatGPT.",
+        );
+      const result = requiredText(input.result, "La respuesta", 16000);
+      if (task.status === "completed" && task.result === result)
+        return structuredClone(task);
+      if (task.status !== "waiting")
+        throw new ApiError(409, "Esta tarea ya terminó o fue cancelada.");
+      task.result = result;
+      task.resultSource = source;
+      task.status = "completed";
+      task.completedAt = now();
+      activity(
+        task.agentId,
+        `Se guardó la respuesta de ${state.agents.find((a) => a.id === task.agentId).name} desde ChatGPT${source === "manual" ? " (pegada por el usuario)" : " (acción de DOT)"}.`,
+      );
+      advance(task);
+      save();
+      return structuredClone(task);
+    },
     cancelTask(id) {
       const task = state.tasks.find((t) => t.id === id);
       if (!task) throw new ApiError(404, "La tarea no existe.");
-      if (!["queued", "running"].includes(task.status))
+      if (!["queued", "running", "waiting"].includes(task.status))
         throw new ApiError(409, "Esta tarea ya terminó.");
       task.status = "cancelled";
       task.completedAt = now();
@@ -299,8 +387,9 @@ export function createWorkspace({
       if (!workflow) throw new ApiError(400, "El flujo no existe.");
       const brief = requiredText(input.brief, "El brief");
       if (
-        state.tasks.filter((t) => ["queued", "running"].includes(t.status))
-          .length >= 60
+        state.tasks.filter((t) =>
+          ["queued", "running", "waiting"].includes(t.status),
+        ).length >= 60
       )
         throw new ApiError(429, "Hay demasiadas tareas pendientes.");
       const run = {
@@ -311,6 +400,7 @@ export function createWorkspace({
         taskIds: [],
         status: "running",
         createdAt: now(),
+        mode: state.settings.executionMode === "chatgpt" ? "chatgpt" : mode,
       };
       state.runs.unshift(run);
       const task = newTask(
@@ -323,6 +413,11 @@ export function createWorkspace({
       return structuredClone(run);
     },
     updateSettings(input) {
+      if (
+        "executionMode" in input &&
+        !["auto", "chatgpt"].includes(input.executionMode)
+      )
+        throw new ApiError(400, "Elige el modo de trabajo de los agentes.");
       if ("dotInstructions" in input) {
         if (
           typeof input.dotInstructions !== "string" ||
@@ -347,6 +442,8 @@ export function createWorkspace({
         state.settings.dotInstructions = input.dotInstructions.trim();
       if ("slackChannelId" in input)
         state.settings.slackChannelId = input.slackChannelId.trim();
+      if ("executionMode" in input)
+        state.settings.executionMode = input.executionMode;
       save();
       return snapshot().settings;
     },
