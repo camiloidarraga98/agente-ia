@@ -1,0 +1,22 @@
+# First deployment: free demo. The free plan has ephemeral disk storage.
+# For lasting itinerary data, use a paid instance and attach a persistent disk.
+services:
+  - type: web
+    name: jac-music-workspace
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm ci --no-audit --no-fund && npm test && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: JAC_ACCESS_PASSWORD
+        generateValue: true
+      - key: JAC_MODEL
+        value: gpt-4.1-mini
