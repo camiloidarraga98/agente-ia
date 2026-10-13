@@ -40,6 +40,8 @@ GitHub se usa como repositorio del código; **Render aloja la interfaz y el serv
 
 La instalación de Render usa `npm ci --include=dev` para conservar TypeScript y Vite durante la compilación, incluso con `NODE_ENV=production`. Estas herramientas se necesitan para generar la interfaz antes de arrancar el servidor.
 
+El archivo `.npmrc` también incluye las dependencias de desarrollo, de modo que un servicio que aún conserve el comando anterior `npm ci` pueda compilar. Si un despliegue falla con `TS2688` para `node` o `vite/client`, comprueba que Render esté desplegando el commit más reciente de `main`. En los ajustes del servicio, el **Build Command** debe ser `npm ci --include=dev --no-audit --no-fund && npm test && npm run build`; vuelve a desplegar con la caché de compilación limpia si se conservó una instalación anterior.
+
 1. Abre [Desplegar en Render](https://render.com/deploy?repo=https://github.com/camiloidarraga98/agente-ia).
 2. Entra o crea una cuenta en Render y conecta GitHub, concediendo acceso al repositorio `camiloidarraga98/agente-ia`.
 3. Revisa el servicio `jac-music-workspace` y despliega el blueprint. El plan inicial es **free** y la aplicación arranca en modo demo.
