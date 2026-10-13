@@ -38,6 +38,8 @@ El comando de producción sirve la interfaz compilada y la API juntas en el puer
 
 GitHub se usa como repositorio del código; **Render aloja la interfaz y el servidor**. La configuración está en `render.yaml` y utiliza Node.js 24.19.0. No necesitas GitHub Pages.
 
+La instalación de Render usa `npm ci --include=dev` para conservar TypeScript y Vite durante la compilación, incluso con `NODE_ENV=production`. Estas herramientas se necesitan para generar la interfaz antes de arrancar el servidor.
+
 1. Abre [Desplegar en Render](https://render.com/deploy?repo=https://github.com/camiloidarraga98/agente-ia).
 2. Entra o crea una cuenta en Render y conecta GitHub, concediendo acceso al repositorio `camiloidarraga98/agente-ia`.
 3. Revisa el servicio `jac-music-workspace` y despliega el blueprint. El plan inicial es **free** y la aplicación arranca en modo demo.
